@@ -88,6 +88,8 @@
   .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--muted); }
   .legend .item { display: flex; align-items: center; gap: 6px; }
   .legend .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .dev-readout { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .dev-readout b { font-variant-numeric: tabular-nums; }
 
   /* センチメントバー */
   .sentiment { display: flex; height: 34px; border-radius: 8px; overflow: hidden; margin-bottom: 4px; }
@@ -190,14 +192,15 @@
     <div class="chart-area">
       <canvas id="chart-pred"></canvas>
       <div id="boundary"></div>
-      <div id="boundary-label">← 疑似 │ リアルタイム →</div>
+      <div id="boundary-label">← 実績 │ 予想 →</div>
     </div>
     <div class="legend">
-      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>疑似 陽線</div>
-      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.35)"></span>疑似 陰線</div>
-      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>リアル 陽線</div>
-      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>リアル 陰線</div>
+      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績 陽線</div>
+      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>実績 陰線</div>
+      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>予想 陽線</div>
+      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.35)"></span>予想 陰線</div>
     </div>
+    <div class="dev-readout" id="dev-readout"></div>
   </div>
 
   <!-- センチメントバー -->
@@ -246,22 +249,26 @@
 <script>
 /* ===================== 定数 ===================== */
 const TOTAL = 50000;
-const PSEUDO_COUNT = 50;
-const LIVE_COUNT = 50;
-const C_UP_P = 'rgba(29,158,117,0.35)';
-const C_DN_P = 'rgba(226,75,74,0.35)';
-const C_UP_L = 'rgba(29,158,117,0.85)';
-const C_DN_L = 'rgba(226,75,74,0.85)';
+const REAL_COUNT = 48;      // 実績足の保持本数
+const FORECAST_COUNT = 12;  // 予想足の本数
+const LEARN_RATE = 0.2;     // ドリフト学習率（EMA）
+const C_UP_F = 'rgba(29,158,117,0.35)'; // 予想 陽線（半透明）
+const C_DN_F = 'rgba(226,75,74,0.35)';  // 予想 陰線（半透明）
+const C_UP_R = 'rgba(29,158,117,0.85)'; // 実績 陽線（不透明）
+const C_DN_R = 'rgba(226,75,74,0.85)';  // 実績 陰線（不透明）
 
 /* ===================== 状態 ===================== */
 let livePrice = 155.342;
 let rateStatus = 'loading'; // 'live' | 'pseudo' | 'loading'
-let tfMin = 5; // 5分足固定（私用）
-let pseudoCandles = [];
-let liveCandles = [];
+let tfMin = 5;              // 5分足固定（私用）
+let realCandles = [];       // 実績足（履歴＋形成中）。一度作ったら作り直さず連続
+let forecastCandles = [];   // 予想足（実績とのズレを観測して引き直す）
+let drift = 0;              // 1足あたりの予想変化（学習値）
+let lastDeviation = 0;      // 直近の予想ずれ（実績close − 予想close）
+let mae = 0, maeN = 0;      // 予想の平均絶対誤差（学習指標）
 let traders = [];
-let chartLive = null; // リアルタイムチャート（ライブ足のみ）
-let chartPred = null; // 疑似込みチャート（予想）
+let chartLive = null;       // リアルタイムチャート（実績足のみ）
+let chartPred = null;       // 予想チャート（実績＋予想）
 
 /* ===================== 為替レート取得 ===================== */
 async function fetchLiveRate() {
@@ -280,70 +287,73 @@ async function fetchLiveRate() {
   return null; // 失敗時は疑似レートにフォールバック
 }
 
-/* ===================== ロウソク足生成 ===================== */
+/* ===================== ロウソク足（実績の連続保持＋適応予想） ===================== */
 const r3 = v => parseFloat(v.toFixed(3));
+const BUCKET_MS = () => tfMin * 60 * 1000;          // 5分足の1バケット長
+const bucketOf = t => Math.floor(t / BUCKET_MS());  // 時刻→バケットID
 
-// basePrice から過去に向かって 50 本生成
-function buildPseudoCandles(basePrice, tfMin) {
-  const out = [];
+// 初回のみ: 実績の履歴を生成（以降は作り直さず連続させる）
+function seedRealCandles(basePrice) {
+  realCandles = [];
   const k = Math.sqrt(tfMin);
-  const body = 0.07 * k;   // 各足の変動幅
-  const wick = 0.035 * k;  // ヒゲ
-  const now = Date.now();
-  // 始点: basePrice - ランダムオフセット(0.5〜1.7円)
-  let prevClose = basePrice - (0.5 + Math.random() * 1.2);
-  for (let i = 0; i < PSEUDO_COUNT; i++) {
-    const o = prevClose;
-    const c = o + (Math.random() * 2 - 1) * body;
-    const h = Math.max(o, c) + Math.random() * wick;
-    const l = Math.min(o, c) - Math.random() * wick;
-    // 最も古い足が i=PSEUDO_COUNT-1 となるように timestamp を割り当て
-    const idxFromNow = (LIVE_COUNT + (PSEUDO_COUNT - i)); // 古いほど大きい
-    const t = now - idxFromNow * tfMin * 60 * 1000;
-    out.push({ o: r3(o), h: r3(h), l: r3(l), c: r3(c), t, live: false });
-    prevClose = c;
+  const nowB = bucketOf(Date.now());
+  // 過去にさかのぼった始点から、basePrice まで自然に到達させる
+  let price = basePrice - (Math.random() * 0.8 + 0.2);
+  for (let i = REAL_COUNT - 1; i >= 0; i--) {
+    const o = price;
+    const c = (i === 0) ? basePrice : o + (Math.random() * 2 - 1) * 0.07 * k;
+    const h = Math.max(o, c) + Math.random() * 0.035 * k;
+    const l = Math.min(o, c) - Math.random() * 0.035 * k;
+    const b = nowB - i;
+    realCandles.push({ bucket: b, o: r3(o), h: r3(h), l: r3(l), c: r3(c), t: b * BUCKET_MS(), forming: i === 0 });
+    price = c;
   }
-  return out;
 }
 
-// 疑似足の最終終値を起点に 50 本生成、最終足の close を basePrice に固定
-function buildLiveCandles(basePrice, tfMin, startPrice) {
-  const out = [];
+// 足が確定するたびに「予想 vs 実績」の誤差を観測し、ドリフトを学習
+function commitAndLearn(candle) {
+  candle.forming = false;
+  const realized = candle.c - candle.o; // この足で実際に動いた幅
+  const predicted = drift;              // 予想していた1足の変化
+  const err = realized - predicted;
+  lastDeviation = r3(candle.c - (candle.o + predicted)); // 実績close − 予想close
+  drift = drift + LEARN_RATE * (realized - drift);       // ドリフトを実現値へ寄せる
+  maeN++; mae = mae + (Math.abs(err) - mae) / maeN;      // 平均絶対誤差を更新
+}
+
+// livePrice を形成中の足へ反映。バケットが進んでいれば確定→新足をロール
+function syncForming() {
+  const nowB = bucketOf(Date.now());
+  let cur = realCandles[realCandles.length - 1];
+  while (cur.bucket < nowB) {
+    commitAndLearn(cur);
+    const o = cur.c;
+    cur = { bucket: cur.bucket + 1, o, h: o, l: o, c: o, t: (cur.bucket + 1) * BUCKET_MS(), forming: true };
+    realCandles.push(cur);
+    if (realCandles.length > REAL_COUNT) realCandles.shift();
+  }
+  cur.c = livePrice;
+  cur.h = r3(Math.max(cur.h, livePrice, cur.o));
+  cur.l = r3(Math.min(cur.l, livePrice, cur.o));
+}
+
+// 学習済みドリフトで未来の予想足を引き直す（地平が遠いほど不確実性コーンを広げる）
+function rebuildForecast() {
+  const cur = realCandles[realCandles.length - 1];
   const k = Math.sqrt(tfMin);
-  const body = 0.06 * k;
-  const wick = 0.035 * k;
-  const now = Date.now();
-  let prevClose = startPrice;
-  for (let i = 0; i < LIVE_COUNT; i++) {
-    const o = prevClose;
-    let c = o + (Math.random() * 2 - 1) * body;
-    const idxFromNow = LIVE_COUNT - 1 - i; // 0 が現在足
-    if (i === LIVE_COUNT - 1) c = basePrice; // 現在足の close をライブレートに固定
-    const h = Math.max(o, c) + Math.random() * wick;
-    const l = Math.min(o, c) - Math.random() * wick;
-    const t = now - idxFromNow * tfMin * 60 * 1000;
-    out.push({ o: r3(o), h: r3(h), l: r3(l), c: r3(c), t, live: true });
-    prevClose = c;
+  forecastCandles = [];
+  let o = cur.c;
+  for (let i = 0; i < FORECAST_COUNT; i++) {
+    const c = o + drift;
+    const band = (0.02 + 0.012 * i) * k; // 先になるほど広いヒゲ＝不確実性
+    const h = Math.max(o, c) + band;
+    const l = Math.min(o, c) - band;
+    forecastCandles.push({ o: r3(o), h: r3(h), l: r3(l), c: r3(c), t: (cur.bucket + 1 + i) * BUCKET_MS(), forecast: true });
+    o = c;
   }
-  return out;
 }
 
-function rebuildCandles() {
-  pseudoCandles = buildPseudoCandles(livePrice, tfMin);
-  const startPrice = pseudoCandles[pseudoCandles.length - 1].c;
-  liveCandles = buildLiveCandles(livePrice, tfMin, startPrice);
-}
-
-// 3秒ごとの tick: livePrice を微変動させ、最終足の c/h/l を更新
-function tickCandle() {
-  livePrice = r3(livePrice + (Math.random() * 2 - 1) * 0.012);
-  const last = liveCandles[liveCandles.length - 1];
-  last.c = livePrice;
-  last.h = r3(Math.max(last.h, last.c, last.o));
-  last.l = r3(Math.min(last.l, last.c, last.o));
-}
-
-function allCandles() { return pseudoCandles.concat(liveCandles); }
+function predCandles() { return realCandles.concat(forecastCandles); }
 
 /* ===================== トレーダー生成 ===================== */
 // ロット重み付きテーブル（小ロット=初心者を多数派に、大口を少数派に）
@@ -435,7 +445,7 @@ function buildDatasets(candles) {
   const wickColors = [], bodyColors = [];
   candles.forEach(cd => {
     const up = cd.c >= cd.o;
-    const col = cd.live ? (up ? C_UP_L : C_DN_L) : (up ? C_UP_P : C_DN_P);
+    const col = cd.forecast ? (up ? C_UP_F : C_DN_F) : (up ? C_UP_R : C_DN_R);
     wick.push([cd.l, cd.h]);
     body.push([cd.o, cd.c]);
     wickColors.push(col);
@@ -460,7 +470,7 @@ function tooltipConfig(getCandles) {
     callbacks: {
       title: items => {
         const cd = getCandles()[items[0].dataIndex];
-        const tag = cd.live ? '【リアルタイム】' : '【疑似】';
+        const tag = cd.forecast ? '【予想】' : '【実績】';
         return `${items[0].label} ${tag}`;
       },
       label: item => {
@@ -521,8 +531,8 @@ function positionBoundary() {
   const area = chartPred.chartArea;
   const xScale = chartPred.scales.x;
   if (!area || !xScale) return;
-  // 疑似足(0..49)とリアル足(50..99)の境界 = index 49.5 付近
-  const x = xScale.getPixelForValue(PSEUDO_COUNT - 0.5);
+  // 実績と予想の境界 = 実績の最終足の直後
+  const x = xScale.getPixelForValue(realCandles.length - 0.5);
   const bd = document.getElementById('boundary');
   const lb = document.getElementById('boundary-label');
   bd.style.left = x + 'px';
@@ -533,11 +543,11 @@ function positionBoundary() {
 
 function renderChart() {
   if (!chartLive) {
-    chartLive = makeChart('chart-live', () => liveCandles, null);
-    chartPred = makeChart('chart-pred', () => allCandles(), positionBoundary);
+    chartLive = makeChart('chart-live', () => realCandles, null);
+    chartPred = makeChart('chart-pred', () => predCandles(), positionBoundary);
   } else {
-    updateChart(chartLive, () => liveCandles);
-    updateChart(chartPred, () => allCandles());
+    updateChart(chartLive, () => realCandles);
+    updateChart(chartPred, () => predCandles());
   }
   positionBoundary();
 }
@@ -547,8 +557,7 @@ const fmt = n => n.toLocaleString('en-US');
 const sign = n => (n >= 0 ? '+' : '') + fmt(n);
 
 function updateUI() {
-  const candles = allCandles();
-  const base = candles[0].o;
+  const base = realCandles[0].o;
   const diff = livePrice - base;
   const pct = (diff / base) * 100;
 
@@ -566,6 +575,15 @@ function updateUI() {
   const now = new Date();
   document.getElementById('h-updated').textContent =
     `最終更新: ${now.toTimeString().slice(0,8)}`;
+
+  // 予想とのズレ観測（学習ドリフト・直近ずれ・平均誤差）
+  const driftYen = drift; // 1足(5分)あたりの予想変化
+  const accuracy = maeN > 0 ? Math.max(0, 100 - mae * 1000) : null; // 誤差0.1円で約0%
+  document.getElementById('dev-readout').innerHTML =
+    `<span>予想ドリフト: <b class="${driftYen >= 0 ? 'pos' : 'neg'}">${driftYen >= 0 ? '+' : ''}${driftYen.toFixed(3)}円/5分</b></span>` +
+    `<span>直近ずれ: <b class="${lastDeviation >= 0 ? 'pos' : 'neg'}">${lastDeviation >= 0 ? '+' : ''}${lastDeviation.toFixed(3)}円</b></span>` +
+    `<span>平均誤差(MAE): <b>${maeN > 0 ? mae.toFixed(3) + '円' : '— (観測中)'}</b></span>` +
+    (accuracy !== null ? `<span>予想精度: <b>${accuracy.toFixed(0)}%</b></span>` : '');
 
   // 集計
   let buys = 0, wins = 0, profCount = 0, lossCount = 0;
@@ -661,7 +679,10 @@ async function fetchAndInit() {
   const rate = await fetchLiveRate();
   if (rate !== null) { livePrice = rate; rateStatus = 'live'; }
   else { rateStatus = 'pseudo'; } // livePrice は現状値を維持
-  rebuildCandles();
+  // 履歴は初回のみ生成。手動更新やリロードでは作り直さず連続させる
+  if (realCandles.length === 0) seedRealCandles(livePrice);
+  syncForming();
+  rebuildForecast();
   genTraders();
   renderChart();
   updateUI();
@@ -673,7 +694,10 @@ function updateBadgeOnly() {
 }
 
 function tick() {
-  tickCandle();
+  // ライブレートを微変動（実運用ではここで実レート反映）
+  livePrice = r3(livePrice + (Math.random() * 2 - 1) * 0.012);
+  syncForming();      // 実績足を進める＋足が確定したら誤差を学習
+  rebuildForecast();  // 学習結果で予想を引き直す
   genTraders();
   renderChart();
   updateUI();
