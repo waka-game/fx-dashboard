@@ -75,7 +75,10 @@
   .tfbtn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
 
   /* チャート */
-  .chart-area { position: relative; height: 380px; }
+  /* リアル/予想チャートを左右1:1で並べる */
+  .charts-1to1 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  .chart-col { min-width: 0; }
+  .chart-area { position: relative; height: 360px; }
   #boundary {
     position: absolute; top: 0; width: 0; border-left: 2px dashed rgba(255,180,0,0.6);
     pointer-events: none;
@@ -90,6 +93,11 @@
   .legend .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
   .dev-readout { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
   .dev-readout b { font-variant-numeric: tabular-nums; }
+  /* 予想サマリー（分かりやすさ重視の大きめ表示） */
+  .forecast-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 12px; padding: 10px 12px; background: var(--panel2); border-radius: 10px; font-size: 14px; }
+  .forecast-summary .arrow { font-size: 20px; font-weight: 700; }
+  .forecast-summary .target { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .forecast-summary .sub { color: var(--muted); font-size: 12px; }
 
   /* センチメントバー */
   .sentiment { display: flex; height: 34px; border-radius: 8px; overflow: hidden; margin-bottom: 4px; }
@@ -149,6 +157,7 @@
   @media (max-width: 760px) {
     .metrics { grid-template-columns: repeat(2, 1fr); }
     .grid2 { grid-template-columns: 1fr; }
+    .charts-1to1 { grid-template-columns: 1fr; }
     .price { font-size: 30px; }
     .dist-row .rng { width: 96px; }
   }
@@ -173,34 +182,44 @@
     <div class="card"><div class="label">勝率</div><div class="val" id="m-win">--%</div></div>
   </div>
 
-  <!-- リアルタイムチャート -->
-  <div class="section-title">リアルタイム ドル円（5分足）</div>
-  <div class="panel">
-    <div class="chart-area">
-      <canvas id="chart-live"></canvas>
-    </div>
-    <div class="legend">
-      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>陽線</div>
-      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>陰線</div>
-      <div class="item">ライブレート起点・3秒ごと更新</div>
-    </div>
-  </div>
+  <!-- リアル/予想チャート（左右1:1） -->
+  <div class="charts-1to1">
 
-  <!-- 疑似チャート込み（予想）チャート -->
-  <div class="section-title">疑似チャート込み ドル円（5分足・予想）</div>
-  <div class="panel">
-    <div class="chart-area">
-      <canvas id="chart-pred"></canvas>
-      <div id="boundary"></div>
-      <div id="boundary-label">← 実績 │ 予想 →</div>
+    <!-- リアルタイムチャート -->
+    <div class="chart-col">
+      <div class="section-title">リアルタイム ドル円（5分足・実績）</div>
+      <div class="panel">
+        <div class="chart-area">
+          <canvas id="chart-live"></canvas>
+        </div>
+        <div class="legend">
+          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>陽線</div>
+          <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>陰線</div>
+          <div class="item">実際の値動き・3秒ごと更新</div>
+        </div>
+      </div>
     </div>
-    <div class="legend">
-      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績 陽線</div>
-      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>実績 陰線</div>
-      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>予想 陽線</div>
-      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.35)"></span>予想 陰線</div>
+
+    <!-- 予想チャート -->
+    <div class="chart-col">
+      <div class="section-title">予想 ドル円（5分足・自己学習）</div>
+      <div class="panel">
+        <div class="forecast-summary" id="forecast-summary"></div>
+        <div class="chart-area">
+          <canvas id="chart-pred"></canvas>
+          <div id="boundary"></div>
+          <div id="boundary-label">← 実績 │ 予想 →</div>
+        </div>
+        <div class="legend">
+          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績 陽線</div>
+          <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>実績 陰線</div>
+          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>予想 陽線</div>
+          <div class="item"><span class="sw" style="background:rgba(226,75,74,0.35)"></span>予想 陰線</div>
+        </div>
+        <div class="dev-readout" id="dev-readout"></div>
+      </div>
     </div>
-    <div class="dev-readout" id="dev-readout"></div>
+
   </div>
 
   <!-- センチメントバー -->
@@ -354,6 +373,29 @@ function rebuildForecast() {
 }
 
 function predCandles() { return realCandles.concat(forecastCandles); }
+
+/* ===================== 状態の永続化（リロードしても同じチャート） ===================== */
+const STORE_KEY = 'fx-dashboard-state-v2';
+
+function saveState() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      tfMin, realCandles, drift, mae, maeN
+    }));
+  } catch (e) {}
+}
+
+function loadState() {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE_KEY));
+    if (!s || s.tfMin !== tfMin || !Array.isArray(s.realCandles) || s.realCandles.length === 0) return false;
+    realCandles = s.realCandles;
+    drift = s.drift || 0;
+    mae = s.mae || 0;
+    maeN = s.maeN || 0;
+    return true;
+  } catch (e) { return false; }
+}
 
 /* ===================== トレーダー生成 ===================== */
 // ロット重み付きテーブル（小ロット=初心者を多数派に、大口を少数派に）
@@ -576,6 +618,20 @@ function updateUI() {
   document.getElementById('h-updated').textContent =
     `最終更新: ${now.toTimeString().slice(0,8)}`;
 
+  // 予想サマリー（現在 → 予想到達点。分かりやすさ重視の大きめ表示）
+  const cur = livePrice;
+  const target = forecastCandles.length ? forecastCandles[forecastCandles.length - 1].c : cur;
+  const fdiff = target - cur;
+  const horizonMin = FORECAST_COUNT * tfMin;
+  const arrow = fdiff > 0.005 ? '↑' : (fdiff < -0.005 ? '↓' : '→');
+  const fcls = fdiff > 0.005 ? 'pos' : (fdiff < -0.005 ? 'neg' : '');
+  const trend = fdiff > 0.005 ? '上昇' : (fdiff < -0.005 ? '下落' : '横ばい');
+  document.getElementById('forecast-summary').innerHTML =
+    `<span class="sub">現在</span><span class="target">${cur.toFixed(3)}</span>` +
+    `<span class="arrow ${fcls}">${arrow}</span>` +
+    `<span class="sub">${horizonMin}分後の予想</span><span class="target ${fcls}">${target.toFixed(3)}</span>` +
+    `<span class="${fcls}" style="font-weight:700">${fdiff >= 0 ? '+' : ''}${fdiff.toFixed(3)}円（${trend}）</span>`;
+
   // 予想とのズレ観測（学習ドリフト・直近ずれ・平均誤差）
   const driftYen = drift; // 1足(5分)あたりの予想変化
   const accuracy = maeN > 0 ? Math.max(0, 100 - mae * 1000) : null; // 誤差0.1円で約0%
@@ -679,10 +735,11 @@ async function fetchAndInit() {
   const rate = await fetchLiveRate();
   if (rate !== null) { livePrice = rate; rateStatus = 'live'; }
   else { rateStatus = 'pseudo'; } // livePrice は現状値を維持
-  // 履歴は初回のみ生成。手動更新やリロードでは作り直さず連続させる
-  if (realCandles.length === 0) seedRealCandles(livePrice);
+  // 履歴は保存済みなら復元、なければ初回生成。手動更新・リロードでは作り直さず連続させる
+  if (realCandles.length === 0 && !loadState()) seedRealCandles(livePrice);
   syncForming();
   rebuildForecast();
+  saveState();
   genTraders();
   renderChart();
   updateUI();
@@ -698,6 +755,7 @@ function tick() {
   livePrice = r3(livePrice + (Math.random() * 2 - 1) * 0.012);
   syncForming();      // 実績足を進める＋足が確定したら誤差を学習
   rebuildForecast();  // 学習結果で予想を引き直す
+  saveState();        // リロードに備えて保存
   genTraders();
   renderChart();
   updateUI();
