@@ -438,7 +438,11 @@ function buildDatasets() {
     const h = d.getHours(), m = d.getMinutes();
     return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
   });
-  return { labels, wick, body, wickColors, bodyColors };
+  // y軸レンジ: ロウソク足が0基点に潰れないよう、安値〜高値に余白を付けて算出
+  let lo = Infinity, hi = -Infinity;
+  candles.forEach(cd => { if (cd.l < lo) lo = cd.l; if (cd.h > hi) hi = cd.h; });
+  const pad = Math.max((hi - lo) * 0.08, 0.02);
+  return { labels, wick, body, wickColors, bodyColors, yMin: lo - pad, yMax: hi + pad };
 }
 
 // 境界線プラグイン代わり: chartArea から 50 本目位置を算出して div を配置
@@ -458,7 +462,7 @@ function positionBoundary() {
 }
 
 function renderChart() {
-  const { labels, wick, body, wickColors, bodyColors } = buildDatasets();
+  const { labels, wick, body, wickColors, bodyColors, yMin, yMax } = buildDatasets();
   if (!chart) {
     const ctx = document.getElementById('chart').getContext('2d');
     chart = new Chart(ctx, {
@@ -475,7 +479,7 @@ function renderChart() {
         maintainAspectRatio: false,
         animation: { duration: 120, onComplete: positionBoundary },
         scales: {
-          y: { ticks: { color: '#93a1b0', callback: v => v.toFixed(2) }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { beginAtZero: false, min: yMin, max: yMax, ticks: { color: '#93a1b0', callback: v => v.toFixed(2) }, grid: { color: 'rgba(255,255,255,0.05)' } },
           x: { ticks: { color: '#93a1b0', maxTicksLimit: 10, autoSkip: true }, grid: { display: false } }
         },
         plugins: {
@@ -509,6 +513,8 @@ function renderChart() {
     chart.data.datasets[0].backgroundColor = wickColors;
     chart.data.datasets[1].data = body;
     chart.data.datasets[1].backgroundColor = bodyColors;
+    chart.options.scales.y.min = yMin;
+    chart.options.scales.y.max = yMax;
     chart.update();
   }
   positionBoundary();
