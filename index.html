@@ -108,6 +108,8 @@
   .dist-row .track { flex: 1; background: var(--panel2); border-radius: 5px; height: 18px; overflow: hidden; }
   .dist-row .fill { height: 100%; background: var(--blue); border-radius: 5px; transition: width 0.5s ease; }
   .dist-row .cnt { width: 64px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .dist-row.cur .rng { color: rgba(255,180,0,0.95); font-weight: 700; }
+  .dist-row.cur .fill { background: rgba(255,180,0,0.8); }
 
   /* 損益サマリー */
   .pl-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
@@ -124,6 +126,12 @@
   .dirbadge { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
   .dirbadge.buy { background: rgba(29,158,117,0.18); color: var(--up); }
   .dirbadge.sell { background: rgba(226,75,74,0.18); color: var(--down); }
+  .typebadge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--panel2); color: var(--muted); white-space: nowrap; }
+  .typebadge.scalper { color: #5bbcff; }
+  .typebadge.dayTrader { color: #7dd3a8; }
+  .typebadge.swingTrader { color: #c8a8ff; }
+  .typebadge.gambler { color: #ffb347; }
+  .typebadge.pro { color: #ffd700; }
   .table-scroll { overflow-x: auto; }
 
   /* 操作ボタン */
@@ -198,7 +206,7 @@
   <!-- 2カラム -->
   <div class="grid2">
     <div>
-      <div class="section-title">エントリー価格帯分布</div>
+      <div class="section-title">建値ヒートマップ（ポジション集中帯）</div>
       <div class="panel" id="dist"></div>
     </div>
     <div>
@@ -213,7 +221,7 @@
     <table>
       <thead>
         <tr>
-          <th class="mono">ID</th><th>方向</th><th class="mono num">エントリー</th>
+          <th class="mono">ID</th><th>タイプ</th><th>方向</th><th class="mono num">エントリー</th>
           <th class="num">ロット</th><th class="mono num">損益(円)</th><th>状態</th>
         </tr>
       </thead>
@@ -330,25 +338,87 @@ function tickCandle() {
 function allCandles() { return pseudoCandles.concat(liveCandles); }
 
 /* ===================== トレーダー生成 ===================== */
-const STATUSES = ['オープン','オープン','オープン','TP待ち','SL接近']; // 重み 3:1:1
+// ロット重み付きテーブル（小ロット=初心者を多数派に、大口を少数派に）
+const LOT_TABLE = [
+  { lot: 0.1, weight: 30 },
+  { lot: 0.2, weight: 20 },
+  { lot: 0.3, weight: 10 },
+  { lot: 0.5, weight: 15 },
+  { lot: 1.0, weight: 15 },
+  { lot: 2.0, weight: 7 },
+  { lot: 5.0, weight: 3 }
+];
+
+// トレーダータイプ: 出現率 + タイプ別エントリー距離 + ロット倍率
+const TYPE_TABLE = [
+  { type: 'scalper',     label: 'スキャル',     weight: 40, dist: 0.10 },
+  { type: 'dayTrader',   label: 'デイ',         weight: 30, dist: 0.50 },
+  { type: 'swingTrader', label: 'スイング',     weight: 15, dist: 3.00 },
+  { type: 'gambler',     label: 'ギャンブラー', weight: 10, dist: 1.00, lotMul: 2 },
+  { type: 'pro',         label: 'プロ',         weight: 5,  dist: 0.30 }
+];
+
+const WIN_RATIO = 0.25; // 含み益トレーダーの目標割合（利益25% / 損失75%）
+
+// 重み付き抽選（テーブルは weight プロパティを持つ）
+function pickWeighted(table) {
+  let total = 0;
+  for (const e of table) total += e.weight;
+  let r = Math.random() * total;
+  for (const e of table) { if ((r -= e.weight) < 0) return e; }
+  return table[table.length - 1];
+}
+
+// 正規分布乱数（Box-Muller）
+function gaussianRandom(mean = 0, sigma = 1) {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return mean + sigma * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
 
 function genTraders() {
   const arr = new Array(TOTAL);
   const p = livePrice;
   for (let i = 0; i < TOTAL; i++) {
+    const tp = pickWeighted(TYPE_TABLE);
     const dir = Math.random() < 0.53 ? 'buy' : 'sell';
-    const entry = r3(p + (Math.random() * 2 - 1) * 1.0);
-    const lot = parseFloat((0.1 + Math.random() * 4.9).toFixed(1));
+
+    // ロット: 重み付き抽選 → gambler は2倍
+    let lot = pickWeighted(LOT_TABLE).lot;
+    if (tp.lotMul) lot = parseFloat((lot * tp.lotMul).toFixed(1));
+
+    // 含み益/含み損を先に決定（目標 25%:75%）し、建値の方向で整合させる
+    const winner = Math.random() < WIN_RATIO;
+    // タイプ別距離を sigma に反映し、現在価格付近へ集中させる（正規分布）
+    const mag = Math.abs(gaussianRandom(0, tp.dist / 2));
+    // buy:  勝ち = 建値が現在値より下 / sell: 勝ち = 建値が現在値より上
+    const entryBelow = dir === 'buy' ? winner : !winner;
+    let entry = entryBelow ? p - mag : p + mag;
+    entry = Number(entry.toFixed(3));
+
     const pips = dir === 'buy' ? (p - entry) * 100 : (entry - p) * 100;
-    const pl = Math.round(pips * lot * 100);
-    const status = STATUSES[Math.floor(Math.random() * STATUSES.length)];
+    let pl = Math.round(pips * lot * 100);
+    // 丸めで0になった分を勝敗側へ寄せ、比率を保つ
+    if (winner && pl <= 0) pl = 1;
+    if (!winner && pl >= 0) pl = -1;
+
+    // status は損益額と連動
+    let status;
+    if (pl >= 1000) status = 'TP待ち';
+    else if (pl <= -1000) status = 'SL接近';
+    else status = 'オープン';
+
     arr[i] = {
       id: 'T' + String(i + 1).padStart(5, '0'),
+      type: tp.type,
       dir, entry, lot, pl, status
     };
   }
   traders = arr;
 }
+
+const TYPE_LABEL = Object.fromEntries(TYPE_TABLE.map(t => [t.type, t.label]));
 
 /* ===================== チャート描画 ===================== */
 function buildDatasets() {
@@ -473,24 +543,22 @@ function updateUI() {
   let buys = 0, wins = 0, profCount = 0, lossCount = 0;
   let buyPl = 0, sellPl = 0, totalPl = 0;
   const p = livePrice;
-  const bins = [0,0,0,0,0]; // p以上 / p-0.5〜p / p-1.0〜p-0.5 / p-1.5〜p-1.0 / p-1.5以下
+  const heat = new Map(); // 建値ヒートマップ: 0.10円バンド -> 人数
   for (let i = 0; i < TOTAL; i++) {
     const t = traders[i];
     if (t.dir === 'buy') buys++;
     if (t.pl > 0) { wins++; profCount++; } else if (t.pl < 0) { lossCount++; }
     if (t.dir === 'buy') buyPl += t.pl; else sellPl += t.pl;
     totalPl += t.pl;
-    const e = t.entry;
-    if (e >= p) bins[0]++;
-    else if (e >= p - 0.5) bins[1]++;
-    else if (e >= p - 1.0) bins[2]++;
-    else if (e >= p - 1.5) bins[3]++;
-    else bins[4]++;
+    const band = Math.round(Math.floor(t.entry * 10) / 10 * 10) / 10; // 0.10円刻み
+    heat.set(band, (heat.get(band) || 0) + 1);
   }
   const sells = TOTAL - buys;
   const winRate = Math.round(wins / TOTAL * 100);
   const buyPct = (buys / TOTAL * 100);
   const sellPct = 100 - buyPct;
+  const profitPct = (profCount / TOTAL * 100);
+  const lossPct = (lossCount / TOTAL * 100);
 
   // メトリクス
   document.getElementById('m-buy').textContent = fmt(buys);
@@ -504,20 +572,30 @@ function updateUI() {
   sb.textContent = '買い ' + buyPct.toFixed(1) + '%';
   ss.textContent = '売り ' + sellPct.toFixed(1) + '%';
 
-  // 価格帯分布
-  const ranges = [
-    `${p.toFixed(2)} 以上`,
-    `${(p-0.5).toFixed(2)}〜${p.toFixed(2)}`,
-    `${(p-1.0).toFixed(2)}〜${(p-0.5).toFixed(2)}`,
-    `${(p-1.5).toFixed(2)}〜${(p-1.0).toFixed(2)}`,
-    `${(p-1.5).toFixed(2)} 以下`
-  ];
-  const maxBin = Math.max(...bins, 1);
-  document.getElementById('dist').innerHTML = bins.map((c, i) =>
-    `<div class="dist-row">
-       <span class="rng">${ranges[i]}</span>
-       <span class="track"><span class="fill" style="width:${(c/maxBin*100).toFixed(1)}%"></span></span>
-       <span class="cnt">${fmt(c)}</span>
+  // 建値ヒートマップ（現在価格を中心に 0.10円刻みで±0.5円、外側はまとめる）
+  const center = Math.round(Math.floor(p * 10) / 10 * 10) / 10;
+  let above = 0, below = 0;
+  for (const [band, c] of heat) {
+    if (band > center + 0.5 + 1e-9) above += c;
+    else if (band < center - 0.5 - 1e-9) below += c;
+  }
+  const rows = [];
+  rows.push({ rng: `≥ ${(center + 0.6).toFixed(2)}`, c: above, edge: true });
+  for (let k = 5; k >= -5; k--) {
+    const band = Math.round((center + k * 0.1) * 10) / 10;
+    rows.push({
+      rng: `${band.toFixed(2)}〜${(band + 0.1).toFixed(2)}`,
+      c: heat.get(band) || 0,
+      cur: Math.abs(band - center) < 1e-9
+    });
+  }
+  rows.push({ rng: `< ${(center - 0.5).toFixed(2)}`, c: below, edge: true });
+  const maxRow = Math.max(...rows.map(r => r.c), 1);
+  document.getElementById('dist').innerHTML = rows.map(r =>
+    `<div class="dist-row${r.cur ? ' cur' : ''}">
+       <span class="rng">${r.rng}</span>
+       <span class="track"><span class="fill" style="width:${(r.c/maxRow*100).toFixed(1)}%"></span></span>
+       <span class="cnt">${fmt(r.c)}</span>
      </div>`).join('');
 
   // 損益サマリー
@@ -527,8 +605,8 @@ function updateUI() {
     return `<div class="pl-row"><span class="k">${k}</span><span class="v ${cls}">${txt}</span></div>`;
   };
   document.getElementById('plsummary').innerHTML =
-    plRow('利益中トレーダー数', profCount, false) +
-    plRow('損失中トレーダー数', lossCount, false) +
+    `<div class="pl-row"><span class="k">利益中トレーダー数</span><span class="v pos">${fmt(profCount)} (${profitPct.toFixed(1)}%)</span></div>` +
+    `<div class="pl-row"><span class="k">損失中トレーダー数</span><span class="v neg">${fmt(lossCount)} (${lossPct.toFixed(1)}%)</span></div>` +
     `<div class="pl-row"><span class="k">勝率</span><span class="v">${winRate}%</span></div>` +
     plRow('買い勢損益合計', buyPl, true) +
     plRow('売り勢損益合計', sellPl, true) +
@@ -539,6 +617,7 @@ function updateUI() {
   document.getElementById('tlist').innerHTML = top.map(t =>
     `<tr>
        <td class="mono">${t.id}</td>
+       <td><span class="typebadge ${t.type}">${TYPE_LABEL[t.type]}</span></td>
        <td><span class="dirbadge ${t.dir}">${t.dir === 'buy' ? '買い' : '売り'}</span></td>
        <td class="mono num">${t.entry.toFixed(3)}</td>
        <td class="num">${t.lot.toFixed(1)}</td>
