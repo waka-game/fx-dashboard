@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>USD/JPY FX Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --up: #1D9E75;
+    --down: #E24B4A;
+    --blue: #378ADD;
+    --bg: #0e131a;
+    --panel: #161d27;
+    --panel2: #1d2632;
+    --line: #2a3440;
+    --txt: #e8edf2;
+    --muted: #93a1b0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--txt);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+    line-height: 1.5;
+    padding: 16px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+
+  /* ヘッダー */
+  header {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 14px;
+    padding: 16px 18px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; margin-bottom: 16px;
+  }
+  .price { font-size: 38px; font-weight: 700; letter-spacing: -0.5px; }
+  .price .unit { font-size: 18px; color: var(--muted); margin-left: 4px; font-weight: 500; }
+  .change { font-size: 16px; font-weight: 600; }
+  .badge {
+    font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+    background: var(--panel2); color: var(--muted);
+  }
+  .badge.live { background: #E1F5EE; color: #0F6E56; }
+  .badge.pseudo { background: #FAEEDA; color: #854F0B; }
+  .updated { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+  .pos { color: var(--up); }
+  .neg { color: var(--down); }
+
+  /* メトリクスカード */
+  .metrics {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .card .val { font-size: 24px; font-weight: 700; }
+
+  /* セクション */
+  .section-title { font-size: 15px; font-weight: 700; margin: 8px 0 10px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px; margin-bottom: 18px;
+  }
+
+  /* 時間軸ボタン */
+  .tfbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .tfbtn {
+    background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; font-weight: 600;
+    transition: all .15s;
+  }
+  .tfbtn:hover { border-color: var(--blue); }
+  .tfbtn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+  /* チャート */
+  .chart-area { position: relative; height: 380px; }
+  #boundary {
+    position: absolute; top: 0; width: 0; border-left: 2px dashed rgba(255,180,0,0.6);
+    pointer-events: none;
+  }
+  #boundary-label {
+    position: absolute; top: 4px; transform: translateX(-50%);
+    font-size: 11px; color: rgba(255,180,0,0.95); white-space: nowrap;
+    background: rgba(14,19,26,0.7); padding: 2px 6px; border-radius: 4px; pointer-events: none;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .legend .item { display: flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+
+  /* センチメントバー */
+  .sentiment { display: flex; height: 34px; border-radius: 8px; overflow: hidden; margin-bottom: 4px; }
+  .sentiment .buy { background: var(--up); }
+  .sentiment .sell { background: var(--down); }
+  .sentiment span {
+    display: flex; align-items: center; justify-content: center; color: #fff;
+    font-size: 13px; font-weight: 700; transition: width 0.6s ease;
+  }
+  .sentiment-legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+
+  /* 2カラム */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+
+  /* 価格帯分布 */
+  .dist-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 12px; }
+  .dist-row .rng { width: 130px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .dist-row .track { flex: 1; background: var(--panel2); border-radius: 5px; height: 18px; overflow: hidden; }
+  .dist-row .fill { height: 100%; background: var(--blue); border-radius: 5px; transition: width 0.5s ease; }
+  .dist-row .cnt { width: 64px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+  /* 損益サマリー */
+  .pl-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .pl-row:last-child { border-bottom: none; }
+  .pl-row .k { color: var(--muted); }
+  .pl-row .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* テーブル */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.mono, th.mono { font-family: "SF Mono", Consolas, Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .num { text-align: right; }
+  .dirbadge { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
+  .dirbadge.buy { background: rgba(29,158,117,0.18); color: var(--up); }
+  .dirbadge.sell { background: rgba(226,75,74,0.18); color: var(--down); }
+  .table-scroll { overflow-x: auto; }
+
+  /* 操作ボタン */
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .btn {
+    background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 18px; font-size: 13px; cursor: pointer; font-weight: 600;
+    transition: all .15s;
+  }
+  .btn:hover { border-color: var(--blue); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+  @media (max-width: 760px) {
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .grid2 { grid-template-columns: 1fr; }
+    .price { font-size: 30px; }
+    .dist-row .rng { width: 96px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ヘッダー -->
+  <header>
+    <div class="price"><span id="h-price">---.---</span><span class="unit">円</span></div>
+    <div class="change" id="h-change">--</div>
+    <div class="badge" id="h-badge">⏳ 取得中</div>
+    <div class="updated" id="h-updated">最終更新: --:--:--</div>
+  </header>
+
+  <!-- メトリクスカード -->
+  <div class="metrics">
+    <div class="card"><div class="label">総トレーダー</div><div class="val" id="m-total">50,000</div></div>
+    <div class="card"><div class="label">買い</div><div class="val pos" id="m-buy">--</div></div>
+    <div class="card"><div class="label">売り</div><div class="val neg" id="m-sell">--</div></div>
+    <div class="card"><div class="label">勝率</div><div class="val" id="m-win">--%</div></div>
+  </div>
+
+  <!-- チャート -->
+  <div class="section-title">USD/JPY ロウソク足チャート</div>
+  <div class="tfbar" id="tfbar">
+    <button class="tfbtn active" data-tf="1">1分</button>
+    <button class="tfbtn" data-tf="5">5分</button>
+    <button class="tfbtn" data-tf="15">15分</button>
+    <button class="tfbtn" data-tf="60">1時間</button>
+  </div>
+  <div class="panel">
+    <div class="chart-area">
+      <canvas id="chart"></canvas>
+      <div id="boundary"></div>
+      <div id="boundary-label">← 疑似 │ リアルタイム →</div>
+    </div>
+    <div class="legend">
+      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>疑似 陽線</div>
+      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.35)"></span>疑似 陰線</div>
+      <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>リアル 陽線</div>
+      <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>リアル 陰線</div>
+    </div>
+  </div>
+
+  <!-- センチメントバー -->
+  <div class="section-title">市場センチメント</div>
+  <div class="panel">
+    <div class="sentiment">
+      <span class="buy" id="s-buy" style="width:50%">買い 50%</span>
+      <span class="sell" id="s-sell" style="width:50%">売り 50%</span>
+    </div>
+    <div class="sentiment-legend"><span>買い (Long)</span><span>売り (Short)</span></div>
+  </div>
+
+  <!-- 2カラム -->
+  <div class="grid2">
+    <div>
+      <div class="section-title">エントリー価格帯分布</div>
+      <div class="panel" id="dist"></div>
+    </div>
+    <div>
+      <div class="section-title">損益サマリー</div>
+      <div class="panel" id="plsummary"></div>
+    </div>
+  </div>
+
+  <!-- トレーダーリスト -->
+  <div class="section-title">トレーダーリスト（損益上位20件）</div>
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th class="mono">ID</th><th>方向</th><th class="mono num">エントリー</th>
+          <th class="num">ロット</th><th class="mono num">損益(円)</th><th>状態</th>
+        </tr>
+      </thead>
+      <tbody id="tlist"></tbody>
+    </table>
+  </div>
+
+  <!-- 操作ボタン -->
+  <div class="actions">
+    <button class="btn primary" id="btn-refresh">↻ 手動更新</button>
+  </div>
+
+</div>
+
+<script>
+/* ===================== 定数 ===================== */
+const TOTAL = 50000;
+const PSEUDO_COUNT = 50;
+const LIVE_COUNT = 50;
+const C_UP_P = 'rgba(29,158,117,0.35)';
+const C_DN_P = 'rgba(226,75,74,0.35)';
+const C_UP_L = 'rgba(29,158,117,0.85)';
+const C_DN_L = 'rgba(226,75,74,0.85)';
+
+/* ===================== 状態 ===================== */
+let livePrice = 155.342;
+let rateStatus = 'loading'; // 'live' | 'pseudo' | 'loading'
+let tfMin = 1;
+let pseudoCandles = [];
+let liveCandles = [];
+let traders = [];
+let chart = null;
+
+/* ===================== 為替レート取得 ===================== */
+async function fetchLiveRate() {
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.min.json',
+    'https://latest.currency-api.pages.dev/v1/currencies/usd.min.json'
+  ];
+  for (const url of urls) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d?.usd?.jpy) return parseFloat(d.usd.jpy.toFixed(3));
+    } catch(e) {}
+  }
+  return null; // 失敗時は疑似レートにフォールバック
+}
+
+/* ===================== ロウソク足生成 ===================== */
+const r3 = v => parseFloat(v.toFixed(3));
+
+// basePrice から過去に向かって 50 本生成
+function buildPseudoCandles(basePrice, tfMin) {
+  const out = [];
+  const k = Math.sqrt(tfMin);
+  const body = 0.07 * k;   // 各足の変動幅
+  const wick = 0.035 * k;  // ヒゲ
+  const now = Date.now();
+  // 始点: basePrice - ランダムオフセット(0.5〜1.7円)
+  let prevClose = basePrice - (0.5 + Math.random() * 1.2);
+  for (let i = 0; i < PSEUDO_COUNT; i++) {
+    const o = prevClose;
+    const c = o + (Math.random() * 2 - 1) * body;
+    const h = Math.max(o, c) + Math.random() * wick;
+    const l = Math.min(o, c) - Math.random() * wick;
+    // 最も古い足が i=PSEUDO_COUNT-1 となるように timestamp を割り当て
+    const idxFromNow = (LIVE_COUNT + (PSEUDO_COUNT - i)); // 古いほど大きい
+    const t = now - idxFromNow * tfMin * 60 * 1000;
+    out.push({ o: r3(o), h: r3(h), l: r3(l), c: r3(c), t, live: false });
+    prevClose = c;
+  }
+  return out;
+}
+
+// 疑似足の最終終値を起点に 50 本生成、最終足の close を basePrice に固定
+function buildLiveCandles(basePrice, tfMin, startPrice) {
+  const out = [];
+  const k = Math.sqrt(tfMin);
+  const body = 0.06 * k;
+  const wick = 0.035 * k;
+  const now = Date.now();
+  let prevClose = startPrice;
+  for (let i = 0; i < LIVE_COUNT; i++) {
+    const o = prevClose;
+    let c = o + (Math.random() * 2 - 1) * body;
+    const idxFromNow = LIVE_COUNT - 1 - i; // 0 が現在足
+    if (i === LIVE_COUNT - 1) c = basePrice; // 現在足の close をライブレートに固定
+    const h = Math.max(o, c) + Math.random() * wick;
+    const l = Math.min(o, c) - Math.random() * wick;
+    const t = now - idxFromNow * tfMin * 60 * 1000;
+    out.push({ o: r3(o), h: r3(h), l: r3(l), c: r3(c), t, live: true });
+    prevClose = c;
+  }
+  return out;
+}
+
+function rebuildCandles() {
+  pseudoCandles = buildPseudoCandles(livePrice, tfMin);
+  const startPrice = pseudoCandles[pseudoCandles.length - 1].c;
+  liveCandles = buildLiveCandles(livePrice, tfMin, startPrice);
+}
+
+// 3秒ごとの tick: livePrice を微変動させ、最終足の c/h/l を更新
+function tickCandle() {
+  livePrice = r3(livePrice + (Math.random() * 2 - 1) * 0.012);
+  const last = liveCandles[liveCandles.length - 1];
+  last.c = livePrice;
+  last.h = r3(Math.max(last.h, last.c, last.o));
+  last.l = r3(Math.min(last.l, last.c, last.o));
+}
+
+function allCandles() { return pseudoCandles.concat(liveCandles); }
+
+/* ===================== トレーダー生成 ===================== */
+const STATUSES = ['オープン','オープン','オープン','TP待ち','SL接近']; // 重み 3:1:1
+
+function genTraders() {
+  const arr = new Array(TOTAL);
+  const p = livePrice;
+  for (let i = 0; i < TOTAL; i++) {
+    const dir = Math.random() < 0.53 ? 'buy' : 'sell';
+    const entry = r3(p + (Math.random() * 2 - 1) * 1.0);
+    const lot = parseFloat((0.1 + Math.random() * 4.9).toFixed(1));
+    const pips = dir === 'buy' ? (p - entry) * 100 : (entry - p) * 100;
+    const pl = Math.round(pips * lot * 100);
+    const status = STATUSES[Math.floor(Math.random() * STATUSES.length)];
+    arr[i] = {
+      id: 'T' + String(i + 1).padStart(5, '0'),
+      dir, entry, lot, pl, status
+    };
+  }
+  traders = arr;
+}
+
+/* ===================== チャート描画 ===================== */
+function buildDatasets() {
+  const candles = allCandles();
+  const wick = [], body = [];
+  const wickColors = [], bodyColors = [];
+  candles.forEach(cd => {
+    const up = cd.c >= cd.o;
+    const col = cd.live ? (up ? C_UP_L : C_DN_L) : (up ? C_UP_P : C_DN_P);
+    wick.push([cd.l, cd.h]);
+    body.push([cd.o, cd.c]);
+    wickColors.push(col);
+    bodyColors.push(col);
+  });
+  const labels = candles.map(cd => {
+    const d = new Date(cd.t);
+    const h = d.getHours(), m = d.getMinutes();
+    return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
+  });
+  return { labels, wick, body, wickColors, bodyColors };
+}
+
+// 境界線プラグイン代わり: chartArea から 50 本目位置を算出して div を配置
+function positionBoundary() {
+  if (!chart) return;
+  const area = chart.chartArea;
+  const xScale = chart.scales.x;
+  if (!area || !xScale) return;
+  // 疑似足(0..49)とリアル足(50..99)の境界 = index 49.5 付近
+  const x = xScale.getPixelForValue(PSEUDO_COUNT - 0.5);
+  const bd = document.getElementById('boundary');
+  const lb = document.getElementById('boundary-label');
+  bd.style.left = x + 'px';
+  bd.style.top = area.top + 'px';
+  bd.style.height = (area.bottom - area.top) + 'px';
+  lb.style.left = x + 'px';
+}
+
+function renderChart() {
+  const { labels, wick, body, wickColors, bodyColors } = buildDatasets();
+  if (!chart) {
+    const ctx = document.getElementById('chart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'wick', data: wick, backgroundColor: wickColors, barPercentage: 0.15, categoryPercentage: 0.9, order: 2 },
+          { label: 'body', data: body, backgroundColor: bodyColors, barPercentage: 0.6, categoryPercentage: 0.9, order: 1 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 120, onComplete: positionBoundary },
+        scales: {
+          y: { ticks: { color: '#93a1b0', callback: v => v.toFixed(2) }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          x: { ticks: { color: '#93a1b0', maxTicksLimit: 10, autoSkip: true }, grid: { display: false } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            filter: item => item.datasetIndex === 1, // 実体のみ
+            callbacks: {
+              title: items => {
+                const i = items[0].dataIndex;
+                const cd = allCandles()[i];
+                const tag = cd.live ? '【リアルタイム】' : '【疑似】';
+                return `${items[0].label} ${tag}`;
+              },
+              label: item => {
+                const cd = allCandles()[item.dataIndex];
+                return [
+                  `始値: ${cd.o.toFixed(3)}`,
+                  `高値: ${cd.h.toFixed(3)}`,
+                  `安値: ${cd.l.toFixed(3)}`,
+                  `終値: ${cd.c.toFixed(3)}`
+                ];
+              }
+            }
+          }
+        }
+      }
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = wick;
+    chart.data.datasets[0].backgroundColor = wickColors;
+    chart.data.datasets[1].data = body;
+    chart.data.datasets[1].backgroundColor = bodyColors;
+    chart.update();
+  }
+  positionBoundary();
+}
+
+/* ===================== UI 更新 ===================== */
+const fmt = n => n.toLocaleString('en-US');
+const sign = n => (n >= 0 ? '+' : '') + fmt(n);
+
+function updateUI() {
+  const candles = allCandles();
+  const base = candles[0].o;
+  const diff = livePrice - base;
+  const pct = (diff / base) * 100;
+
+  // ヘッダー
+  document.getElementById('h-price').textContent = livePrice.toFixed(3);
+  const ch = document.getElementById('h-change');
+  ch.textContent = `${diff >= 0 ? '+' : ''}${diff.toFixed(3)}円 (${diff >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+  ch.className = 'change ' + (diff >= 0 ? 'pos' : 'neg');
+
+  const badge = document.getElementById('h-badge');
+  if (rateStatus === 'live') { badge.textContent = '🟢 ライブレート'; badge.className = 'badge live'; }
+  else if (rateStatus === 'pseudo') { badge.textContent = '⚠ 疑似レート'; badge.className = 'badge pseudo'; }
+  else { badge.textContent = '⏳ 取得中'; badge.className = 'badge pseudo'; }
+
+  const now = new Date();
+  document.getElementById('h-updated').textContent =
+    `最終更新: ${now.toTimeString().slice(0,8)}`;
+
+  // 集計
+  let buys = 0, wins = 0, profCount = 0, lossCount = 0;
+  let buyPl = 0, sellPl = 0, totalPl = 0;
+  const p = livePrice;
+  const bins = [0,0,0,0,0]; // p以上 / p-0.5〜p / p-1.0〜p-0.5 / p-1.5〜p-1.0 / p-1.5以下
+  for (let i = 0; i < TOTAL; i++) {
+    const t = traders[i];
+    if (t.dir === 'buy') buys++;
+    if (t.pl > 0) { wins++; profCount++; } else if (t.pl < 0) { lossCount++; }
+    if (t.dir === 'buy') buyPl += t.pl; else sellPl += t.pl;
+    totalPl += t.pl;
+    const e = t.entry;
+    if (e >= p) bins[0]++;
+    else if (e >= p - 0.5) bins[1]++;
+    else if (e >= p - 1.0) bins[2]++;
+    else if (e >= p - 1.5) bins[3]++;
+    else bins[4]++;
+  }
+  const sells = TOTAL - buys;
+  const winRate = Math.round(wins / TOTAL * 100);
+  const buyPct = (buys / TOTAL * 100);
+  const sellPct = 100 - buyPct;
+
+  // メトリクス
+  document.getElementById('m-buy').textContent = fmt(buys);
+  document.getElementById('m-sell').textContent = fmt(sells);
+  document.getElementById('m-win').textContent = winRate + '%';
+
+  // センチメントバー
+  const sb = document.getElementById('s-buy'), ss = document.getElementById('s-sell');
+  sb.style.width = buyPct.toFixed(1) + '%';
+  ss.style.width = sellPct.toFixed(1) + '%';
+  sb.textContent = '買い ' + buyPct.toFixed(1) + '%';
+  ss.textContent = '売り ' + sellPct.toFixed(1) + '%';
+
+  // 価格帯分布
+  const ranges = [
+    `${p.toFixed(2)} 以上`,
+    `${(p-0.5).toFixed(2)}〜${p.toFixed(2)}`,
+    `${(p-1.0).toFixed(2)}〜${(p-0.5).toFixed(2)}`,
+    `${(p-1.5).toFixed(2)}〜${(p-1.0).toFixed(2)}`,
+    `${(p-1.5).toFixed(2)} 以下`
+  ];
+  const maxBin = Math.max(...bins, 1);
+  document.getElementById('dist').innerHTML = bins.map((c, i) =>
+    `<div class="dist-row">
+       <span class="rng">${ranges[i]}</span>
+       <span class="track"><span class="fill" style="width:${(c/maxBin*100).toFixed(1)}%"></span></span>
+       <span class="cnt">${fmt(c)}</span>
+     </div>`).join('');
+
+  // 損益サマリー
+  const plRow = (k, v, colored) => {
+    const cls = colored ? (v >= 0 ? 'pos' : 'neg') : '';
+    const txt = colored ? sign(v) + '円' : fmt(v);
+    return `<div class="pl-row"><span class="k">${k}</span><span class="v ${cls}">${txt}</span></div>`;
+  };
+  document.getElementById('plsummary').innerHTML =
+    plRow('利益中トレーダー数', profCount, false) +
+    plRow('損失中トレーダー数', lossCount, false) +
+    `<div class="pl-row"><span class="k">勝率</span><span class="v">${winRate}%</span></div>` +
+    plRow('買い勢損益合計', buyPl, true) +
+    plRow('売り勢損益合計', sellPl, true) +
+    plRow('全体損益合計', totalPl, true);
+
+  // トレーダーリスト 上位20件（|pl|降順）
+  const top = traders.slice().sort((a,b) => Math.abs(b.pl) - Math.abs(a.pl)).slice(0, 20);
+  document.getElementById('tlist').innerHTML = top.map(t =>
+    `<tr>
+       <td class="mono">${t.id}</td>
+       <td><span class="dirbadge ${t.dir}">${t.dir === 'buy' ? '買い' : '売り'}</span></td>
+       <td class="mono num">${t.entry.toFixed(3)}</td>
+       <td class="num">${t.lot.toFixed(1)}</td>
+       <td class="mono num ${t.pl >= 0 ? 'pos' : 'neg'}">${sign(t.pl)}</td>
+       <td>${t.status}</td>
+     </tr>`).join('');
+}
+
+/* ===================== サイクル ===================== */
+async function fetchAndInit() {
+  rateStatus = 'loading';
+  updateBadgeOnly();
+  const rate = await fetchLiveRate();
+  if (rate !== null) { livePrice = rate; rateStatus = 'live'; }
+  else { rateStatus = 'pseudo'; } // livePrice は現状値を維持
+  rebuildCandles();
+  genTraders();
+  renderChart();
+  updateUI();
+}
+
+function updateBadgeOnly() {
+  const badge = document.getElementById('h-badge');
+  badge.textContent = '⏳ 取得中'; badge.className = 'badge pseudo';
+}
+
+function tick() {
+  tickCandle();
+  genTraders();
+  renderChart();
+  updateUI();
+}
+
+/* ===================== イベント ===================== */
+document.getElementById('tfbar').addEventListener('click', e => {
+  const btn = e.target.closest('.tfbtn');
+  if (!btn) return;
+  tfMin = parseInt(btn.dataset.tf, 10);
+  document.querySelectorAll('.tfbtn').forEach(b => b.classList.toggle('active', b === btn));
+  rebuildCandles();
+  renderChart();
+  updateUI();
+});
+
+document.getElementById('btn-refresh').addEventListener('click', () => fetchAndInit());
+
+window.addEventListener('resize', positionBoundary);
+
+/* ===================== 起動 ===================== */
+fetchAndInit();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
