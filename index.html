@@ -324,7 +324,8 @@ async function fetchLiveRate() {
 }
 
 /* ===================== Twelve Data（実際の5分足） ===================== */
-const getApiKey = () => { try { return localStorage.getItem(TD_KEY_STORE) || ''; } catch (e) { return ''; } };
+const TD_DEFAULT_KEY = 'e248cffad6264d55b3c264b47b0c7f5f'; // 直書きキー（公開リポジトリのため露出に注意）
+const getApiKey = () => { try { return localStorage.getItem(TD_KEY_STORE) || TD_DEFAULT_KEY; } catch (e) { return TD_DEFAULT_KEY; } };
 const setApiKey = k => { try { localStorage.setItem(TD_KEY_STORE, k); } catch (e) {} };
 
 // USD/JPY の5分足を REAL_COUNT 本取得（成功時は古い順のローソク足配列、失敗時 null）
