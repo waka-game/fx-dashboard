@@ -376,6 +376,7 @@ const bucketOf = t => Math.floor(t / BUCKET_MS());  // 時刻→バケットID
 // 初回のみ: 実績の履歴を生成（以降は作り直さず連続させる）
 function seedRealCandles(basePrice) {
   realCandles = [];
+  lastClosedBucket = null; // 作り直し時は誤差観測の連続性をリセット
   const k = Math.sqrt(tfMin);
   const nowB = bucketOf(Date.now());
   // 過去にさかのぼった始点から、basePrice まで自然に到達させる
@@ -406,6 +407,8 @@ function commitAndLearn(candle) {
 function syncForming() {
   const nowB = bucketOf(Date.now());
   let cur = realCandles[realCandles.length - 1];
+  // 長時間アイドル後の持ち越しは作り直す（追従スパイク＋カラ足の空白を防ぐ）
+  if (nowB - cur.bucket > 3) { seedRealCandles(livePrice); return; }
   while (cur.bucket < nowB) {
     commitAndLearn(cur);
     const o = cur.c;
