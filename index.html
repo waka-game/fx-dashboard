@@ -70,22 +70,17 @@ header {
 .legend .item { display: flex; align-items: center; gap: 6px; }
 .legend .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
 
-/* 予想サマリー */
-.forecast-summary {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;
-  margin-bottom: 12px; padding: 10px 12px; background: var(--panel2); border-radius: 10px; font-size: 14px;
+/* 予想指標（横並びカード） */
+.stats-row {
+  display: flex; flex-wrap: wrap; gap: 12px;
 }
-.forecast-summary .arrow { font-size: 20px; font-weight: 700; }
-.forecast-summary .target { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.forecast-summary .sub { color: var(--muted); font-size: 12px; }
-
-/* 学習指標 */
-.dev-readout {
-  display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; padding-top: 12px;
-  border-top: 1px solid var(--line); font-size: 12px; color: var(--muted);
+.stat-card {
+  flex: 1 1 140px; min-width: 120px;
+  background: var(--panel2); border-radius: 10px; padding: 12px 14px; text-align: center;
 }
-.dev-readout b { font-variant-numeric: tabular-nums; }
-.dev-readout .sub { font-size: 11px; color: var(--muted); }
+.stat-card .label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.stat-card .val { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-card .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
 /* センチメントバー */
 .sentiment { display: flex; height: 34px; border-radius: 8px; overflow: hidden; margin-bottom: 4px; }
@@ -188,21 +183,24 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, Menlo, monospace; font-vari
     <div class="chart-col">
       <div class="section-title">予想 ドル円（5分足・自己学習）</div>
       <div class="panel">
-        <div class="forecast-summary" id="forecast-summary"></div>
         <div class="chart-area">
           <canvas id="chart-pred"></canvas>
           <div id="boundary"></div>
           <div id="boundary-label">← 実績 │ 予想 →</div>
         </div>
         <div class="legend">
-          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績 陽線</div>
-          <div class="item"><span class="sw" style="background:rgba(226,75,74,0.85)"></span>実績 陰線</div>
-          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>予想 陽線</div>
-          <div class="item"><span class="sw" style="background:rgba(226,75,74,0.35)"></span>予想 陰線</div>
+          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績</div>
+          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>予想</div>
+          <div class="item" id="forecast-brief"></div>
         </div>
-        <div class="dev-readout" id="dev-readout"></div>
       </div>
     </div>
+  </div>
+
+  <!-- 予想指標 -->
+  <div class="section-title">予想精度・学習状況</div>
+  <div class="panel">
+    <div class="stats-row" id="forecast-stats"></div>
   </div>
 
   <!-- センチメントバー -->
@@ -600,26 +598,23 @@ function updateUI() {
 
   document.getElementById('h-updated').textContent = `最終更新: ${new Date().toTimeString().slice(0, 8)}`;
 
-  // 予想サマリー
+  // 予想（凡例内に簡潔表示）
   const target = forecastCandles.length ? forecastCandles[forecastCandles.length - 1].c : livePrice;
   const fdiff = target - livePrice;
   const arrow = fdiff > 0.005 ? '↑' : (fdiff < -0.005 ? '↓' : '→');
   const fcls = fdiff > 0.005 ? 'pos' : (fdiff < -0.005 ? 'neg' : '');
-  const trend = fdiff > 0.005 ? '上昇' : (fdiff < -0.005 ? '下落' : '横ばい');
-  document.getElementById('forecast-summary').innerHTML =
-    `<span class="sub">現在</span><span class="target">${livePrice.toFixed(3)}</span>` +
-    `<span class="arrow ${fcls}">${arrow}</span>` +
-    `<span class="sub">${FORECAST_COUNT * TF_MIN}分後</span><span class="target ${fcls}">${target.toFixed(3)}</span>` +
-    `<span class="${fcls}" style="font-weight:700">${fdiff >= 0 ? '+' : ''}${fdiff.toFixed(3)}円（${trend}）</span>`;
+  document.getElementById('forecast-brief').innerHTML =
+    `<span class="${fcls}" style="font-weight:600">${FORECAST_COUNT * TF_MIN}分後 ${arrow} ${target.toFixed(3)}（${fdiff >= 0 ? '+' : ''}${fdiff.toFixed(3)}円）</span>`;
 
-  // 学習指標
+  // 予想指標（カード形式）
   const matchRate = hitN > 0 ? (hits / hitN * 100) : null;
   const mcls = matchRate === null ? '' : (matchRate >= 50 ? 'pos' : 'neg');
-  document.getElementById('dev-readout').innerHTML =
-    `<span>整合率: <b class="${mcls}">${matchRate !== null ? matchRate.toFixed(0) + '%' : '—'}</b>${hitN > 0 ? ` <span class="sub">(${hits}/${hitN})</span>` : ''}</span>` +
-    `<span>ドリフト: <b class="${drift >= 0 ? 'pos' : 'neg'}">${drift >= 0 ? '+' : ''}${drift.toFixed(3)}円/5分</b></span>` +
-    `<span>直近ずれ: <b class="${lastDeviation >= 0 ? 'pos' : 'neg'}">${lastDeviation >= 0 ? '+' : ''}${lastDeviation.toFixed(3)}円</b></span>` +
-    `<span>MAE: <b>${maeN > 0 ? mae.toFixed(3) + '円' : '—'}</b></span>`;
+  document.getElementById('forecast-stats').innerHTML =
+    `<div class="stat-card"><div class="label">整合率（方向一致）</div><div class="val ${mcls}">${matchRate !== null ? matchRate.toFixed(0) + '%' : '—'}</div><div class="sub">${hitN > 0 ? `${hits}/${hitN}足` : '観測中'}</div></div>` +
+    `<div class="stat-card"><div class="label">60分後予想</div><div class="val ${fcls}">${target.toFixed(2)}</div><div class="sub">${fdiff >= 0 ? '+' : ''}${fdiff.toFixed(3)}円</div></div>` +
+    `<div class="stat-card"><div class="label">ドリフト</div><div class="val ${drift >= 0 ? 'pos' : 'neg'}">${drift >= 0 ? '+' : ''}${drift.toFixed(3)}</div><div class="sub">円/5分</div></div>` +
+    `<div class="stat-card"><div class="label">直近ずれ</div><div class="val ${lastDeviation >= 0 ? 'pos' : 'neg'}">${lastDeviation >= 0 ? '+' : ''}${lastDeviation.toFixed(3)}</div><div class="sub">円</div></div>` +
+    `<div class="stat-card"><div class="label">平均誤差(MAE)</div><div class="val">${maeN > 0 ? mae.toFixed(3) : '—'}</div><div class="sub">${maeN > 0 ? '円' : '観測中'}</div></div>`;
 
   // トレーダー集計
   let buys = 0, profCount = 0, lossCount = 0, buyPl = 0, sellPl = 0, totalPl = 0;
