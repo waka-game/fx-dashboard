@@ -421,14 +421,86 @@ function syncForming() {
   cur.l = r3(Math.min(cur.l, livePrice, cur.o));
 }
 
+/* ========== テクニカル指標 ========== */
+// 移動平均（単純）
+function calcMA(period) {
+  const closes = realCandles.filter(c => !c.forming).slice(-period).map(c => c.c);
+  return closes.length >= period ? closes.reduce((a, b) => a + b, 0) / period : null;
+}
+
+// RSI（相対力指数）
+function calcRSI(period = 14) {
+  const closes = realCandles.filter(c => !c.forming).map(c => c.c);
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) gains += diff; else losses -= diff;
+  }
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - (100 / (1 + rs));
+}
+
+// ATR（平均真の範囲）
+function calcATR(period = 14) {
+  const candles = realCandles.filter(c => !c.forming);
+  if (candles.length < period + 1) return null;
+  let sum = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    const cur = candles[i], prev = candles[i - 1];
+    const tr = Math.max(cur.h - cur.l, Math.abs(cur.h - prev.c), Math.abs(cur.l - prev.c));
+    sum += tr;
+  }
+  return sum / period;
+}
+
+// 現在の指標をグローバルに保持（UI表示用）
+let indicators = { maShort: null, maLong: null, rsi: null, atr: null, signal: 0 };
+
+// 指標を計算してドリフトを補正
+function calcIndicatorsAndAdjustDrift() {
+  const maShort = calcMA(5);   // 短期MA（5本=25分）
+  const maLong = calcMA(20);   // 長期MA（20本=100分）
+  const rsi = calcRSI(14);
+  const atr = calcATR(14);
+
+  indicators = { maShort, maLong, rsi, atr, signal: 0 };
+
+  let adjustedDrift = drift;
+  let signal = 0;
+
+  // MAクロス: 短期 > 長期 なら上昇トレンド
+  if (maShort !== null && maLong !== null) {
+    const maDiff = (maShort - maLong) / maLong * 100; // %差
+    if (maDiff > 0.02) { signal += 1; adjustedDrift += 0.003; }      // 上昇トレンド
+    else if (maDiff < -0.02) { signal -= 1; adjustedDrift -= 0.003; } // 下降トレンド
+  }
+
+  // RSI: 過熱感で反転を予測
+  if (rsi !== null) {
+    if (rsi > 70) { signal -= 1; adjustedDrift -= 0.004; }        // 買われすぎ → 下落予測
+    else if (rsi < 30) { signal += 1; adjustedDrift += 0.004; }   // 売られすぎ → 上昇予測
+  }
+
+  indicators.signal = signal;
+  return { adjustedDrift, atr };
+}
+
 function rebuildForecast() {
   const cur = realCandles[realCandles.length - 1];
   const k = Math.sqrt(TF_MIN);
+  const { adjustedDrift, atr } = calcIndicatorsAndAdjustDrift();
+
+  // ATRでボラティリティに応じた不確実性コーンを調整
+  const volBase = atr !== null ? atr : 0.05;
+
   forecastCandles = [];
   let o = cur.c;
   for (let i = 0; i < FORECAST_COUNT; i++) {
-    const c = o + drift;
-    const band = (0.02 + 0.012 * i) * k;
+    const c = o + adjustedDrift;
+    // 先の足ほど広がる不確実性コーン（ATRベース）
+    const band = volBase * (0.3 + 0.15 * i);
     const h = Math.max(o, c) + band;
     const l = Math.min(o, c) - band;
     forecastCandles.push({ o: r3(o), h: r3(h), l: r3(l), c: r3(c), t: (cur.bucket + 1 + i) * BUCKET_MS, forecast: true });
@@ -606,15 +678,21 @@ function updateUI() {
   document.getElementById('forecast-brief').innerHTML =
     `<span class="${fcls}" style="font-weight:600">${FORECAST_COUNT * TF_MIN}分後 ${arrow} ${target.toFixed(3)}（${fdiff >= 0 ? '+' : ''}${fdiff.toFixed(3)}円）</span>`;
 
-  // 予想指標（カード形式）
+  // 予想指標（カード形式）- テクニカル指標も表示
   const matchRate = hitN > 0 ? (hits / hitN * 100) : null;
   const mcls = matchRate === null ? '' : (matchRate >= 50 ? 'pos' : 'neg');
+  const { maShort, maLong, rsi, atr, signal } = indicators;
+  const sigText = signal > 0 ? '↑買い優勢' : (signal < 0 ? '↓売り優勢' : '→中立');
+  const sigCls = signal > 0 ? 'pos' : (signal < 0 ? 'neg' : '');
+  const rsiCls = rsi !== null ? (rsi > 70 ? 'neg' : (rsi < 30 ? 'pos' : '')) : '';
   document.getElementById('forecast-stats').innerHTML =
-    `<div class="stat-card"><div class="label">整合率（方向一致）</div><div class="val ${mcls}">${matchRate !== null ? matchRate.toFixed(0) + '%' : '—'}</div><div class="sub">${hitN > 0 ? `${hits}/${hitN}足` : '観測中'}</div></div>` +
+    `<div class="stat-card"><div class="label">整合率</div><div class="val ${mcls}">${matchRate !== null ? matchRate.toFixed(0) + '%' : '—'}</div><div class="sub">${hitN > 0 ? `${hits}/${hitN}足` : '観測中'}</div></div>` +
     `<div class="stat-card"><div class="label">60分後予想</div><div class="val ${fcls}">${target.toFixed(2)}</div><div class="sub">${fdiff >= 0 ? '+' : ''}${fdiff.toFixed(3)}円</div></div>` +
-    `<div class="stat-card"><div class="label">ドリフト</div><div class="val ${drift >= 0 ? 'pos' : 'neg'}">${drift >= 0 ? '+' : ''}${drift.toFixed(3)}</div><div class="sub">円/5分</div></div>` +
-    `<div class="stat-card"><div class="label">直近ずれ</div><div class="val ${lastDeviation >= 0 ? 'pos' : 'neg'}">${lastDeviation >= 0 ? '+' : ''}${lastDeviation.toFixed(3)}</div><div class="sub">円</div></div>` +
-    `<div class="stat-card"><div class="label">平均誤差(MAE)</div><div class="val">${maeN > 0 ? mae.toFixed(3) : '—'}</div><div class="sub">${maeN > 0 ? '円' : '観測中'}</div></div>`;
+    `<div class="stat-card"><div class="label">シグナル</div><div class="val ${sigCls}">${sigText}</div><div class="sub">MA+RSI</div></div>` +
+    `<div class="stat-card"><div class="label">RSI(14)</div><div class="val ${rsiCls}">${rsi !== null ? rsi.toFixed(0) : '—'}</div><div class="sub">${rsi !== null ? (rsi > 70 ? '買われすぎ' : (rsi < 30 ? '売られすぎ' : '中立')) : ''}</div></div>` +
+    `<div class="stat-card"><div class="label">MA短期/長期</div><div class="val">${maShort !== null ? maShort.toFixed(2) : '—'}</div><div class="sub">${maLong !== null ? maLong.toFixed(2) : '—'}</div></div>` +
+    `<div class="stat-card"><div class="label">ATR(14)</div><div class="val">${atr !== null ? atr.toFixed(3) : '—'}</div><div class="sub">ボラティリティ</div></div>` +
+    `<div class="stat-card"><div class="label">MAE</div><div class="val">${maeN > 0 ? mae.toFixed(3) : '—'}</div><div class="sub">${maeN > 0 ? '円' : '観測中'}</div></div>`;
 
   // トレーダー集計
   let buys = 0, profCount = 0, lossCount = 0, buyPl = 0, sellPl = 0, totalPl = 0;
