@@ -189,8 +189,8 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, Menlo, monospace; font-vari
           <div id="boundary-label">← 実績 │ 予想 →</div>
         </div>
         <div class="legend">
-          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績</div>
-          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.35)"></span>予想</div>
+          <div class="item"><span class="sw" style="background:rgba(29,158,117,0.85)"></span>実績（ローソク足）</div>
+          <div class="item"><span class="sw" style="background:rgba(255,180,0,0.9);height:3px;border-radius:2px"></span>予想（ライン）</div>
           <div class="item" id="forecast-brief"></div>
         </div>
       </div>
@@ -556,12 +556,13 @@ function genTraders() {
 }
 
 /* ========== Chart.js ========== */
-function buildDatasets(candles) {
+// リアルチャート用（ローソク足のみ）
+function buildCandleDatasets(candles) {
   const wick = [], body = [], wickColors = [], bodyColors = [], labels = [];
   let lo = Infinity, hi = -Infinity;
   candles.forEach(cd => {
     const up = cd.c >= cd.o;
-    const col = cd.forecast ? (up ? C_UP_F : C_DN_F) : (up ? C_UP_R : C_DN_R);
+    const col = up ? C_UP_R : C_DN_R;
     wick.push([cd.l, cd.h]);
     body.push([cd.o, cd.c]);
     wickColors.push(col);
@@ -575,24 +576,88 @@ function buildDatasets(candles) {
   return { labels, wick, body, wickColors, bodyColors, yMin: lo - pad, yMax: hi + pad };
 }
 
-function tooltipConfig(getCandles) {
+// 予想チャート用（実績ローソク足 + 予想ライン + 不確実性バンド）
+function buildPredDatasets() {
+  const labels = [];
+  const wick = [], body = [], wickColors = [], bodyColors = [];
+  const predLine = [], predHigh = [], predLow = [];
+  let lo = Infinity, hi = -Infinity;
+
+  // 実績部分（ローソク足）
+  realCandles.forEach(cd => {
+    const up = cd.c >= cd.o;
+    wick.push([cd.l, cd.h]);
+    body.push([cd.o, cd.c]);
+    wickColors.push(up ? C_UP_R : C_DN_R);
+    bodyColors.push(up ? C_UP_R : C_DN_R);
+    predLine.push(null);
+    predHigh.push(null);
+    predLow.push(null);
+    const d = new Date(cd.t);
+    labels.push(`${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`);
+    if (cd.l < lo) lo = cd.l;
+    if (cd.h > hi) hi = cd.h;
+  });
+
+  // 予想部分（ライン + バンド）
+  forecastCandles.forEach((cd, i) => {
+    wick.push(null);
+    body.push(null);
+    wickColors.push('transparent');
+    bodyColors.push('transparent');
+    // 最初の予想点は実績の最終終値から繋げる
+    if (i === 0) predLine[predLine.length - 1] = realCandles[realCandles.length - 1].c;
+    predLine.push(cd.c);
+    predHigh.push(cd.h);
+    predLow.push(cd.l);
+    const d = new Date(cd.t);
+    labels.push(`${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`);
+    if (cd.l < lo) lo = cd.l;
+    if (cd.h > hi) hi = cd.h;
+  });
+
+  const pad = Math.max((hi - lo) * 0.08, 0.02);
+  return { labels, wick, body, wickColors, bodyColors, predLine, predHigh, predLow, yMin: lo - pad, yMax: hi + pad };
+}
+
+function tooltipConfigReal() {
   return {
     filter: item => item.datasetIndex === 1,
     callbacks: {
-      title: items => {
-        const cd = getCandles()[items[0].dataIndex];
-        return `${items[0].label} ${cd.forecast ? '【予想】' : '【実績】'}`;
-      },
+      title: items => `${items[0].label} 【実績】`,
       label: item => {
-        const cd = getCandles()[item.dataIndex];
-        return [`始値: ${cd.o.toFixed(3)}`, `高値: ${cd.h.toFixed(3)}`, `安値: ${cd.l.toFixed(3)}`, `終値: ${cd.c.toFixed(3)}`];
+        const cd = realCandles[item.dataIndex];
+        return cd ? [`始値: ${cd.o.toFixed(3)}`, `高値: ${cd.h.toFixed(3)}`, `安値: ${cd.l.toFixed(3)}`, `終値: ${cd.c.toFixed(3)}`] : [];
       }
     }
   };
 }
 
-function makeChart(canvasId, getCandles, onComplete) {
-  const { labels, wick, body, wickColors, bodyColors, yMin, yMax } = buildDatasets(getCandles());
+function tooltipConfigPred() {
+  return {
+    callbacks: {
+      title: items => {
+        const idx = items[0].dataIndex;
+        const isForecast = idx >= realCandles.length;
+        return `${items[0].label} ${isForecast ? '【予想】' : '【実績】'}`;
+      },
+      label: item => {
+        const idx = item.dataIndex;
+        if (idx < realCandles.length) {
+          const cd = realCandles[idx];
+          return [`始値: ${cd.o.toFixed(3)}`, `高値: ${cd.h.toFixed(3)}`, `安値: ${cd.l.toFixed(3)}`, `終値: ${cd.c.toFixed(3)}`];
+        } else {
+          const cd = forecastCandles[idx - realCandles.length];
+          return [`予想: ${cd.c.toFixed(3)}`, `上限: ${cd.h.toFixed(3)}`, `下限: ${cd.l.toFixed(3)}`];
+        }
+      }
+    }
+  };
+}
+
+// リアルチャート（ローソク足のみ）
+function makeChartReal(canvasId) {
+  const { labels, wick, body, wickColors, bodyColors, yMin, yMax } = buildCandleDatasets(realCandles);
   const ctx = document.getElementById(canvasId).getContext('2d');
   return new Chart(ctx, {
     type: 'bar',
@@ -605,23 +670,69 @@ function makeChart(canvasId, getCandles, onComplete) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      animation: { duration: 100 },
+      scales: {
+        y: { beginAtZero: false, min: yMin, max: yMax, ticks: { color: '#93a1b0', callback: v => v.toFixed(2) }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        x: { ticks: { color: '#93a1b0', maxTicksLimit: 8, autoSkip: true }, grid: { display: false } }
+      },
+      plugins: { legend: { display: false }, tooltip: tooltipConfigReal() }
+    }
+  });
+}
+
+// 予想チャート（実績ローソク + 予想ライン）
+function makeChartPred(canvasId, onComplete) {
+  const { labels, wick, body, wickColors, bodyColors, predLine, predHigh, predLow, yMin, yMax } = buildPredDatasets();
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  return new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        // 実績ローソク（bar）
+        { type: 'bar', label: 'wick', data: wick, backgroundColor: wickColors, barPercentage: 0.15, categoryPercentage: 0.9, order: 4 },
+        { type: 'bar', label: 'body', data: body, backgroundColor: bodyColors, barPercentage: 0.6, categoryPercentage: 0.9, order: 3 },
+        // 予想バンド上限（line、薄い）
+        { type: 'line', label: 'predHigh', data: predHigh, borderColor: 'rgba(255,180,0,0.3)', borderWidth: 1, borderDash: [4, 2], pointRadius: 0, fill: false, order: 2, tension: 0.2 },
+        // 予想バンド下限（line、薄い）
+        { type: 'line', label: 'predLow', data: predLow, borderColor: 'rgba(255,180,0,0.3)', borderWidth: 1, borderDash: [4, 2], pointRadius: 0, fill: '-1', backgroundColor: 'rgba(255,180,0,0.08)', order: 2, tension: 0.2 },
+        // 予想中心線（line、太め）
+        { type: 'line', label: 'predLine', data: predLine, borderColor: 'rgba(255,180,0,0.9)', borderWidth: 3, pointRadius: 3, pointBackgroundColor: 'rgba(255,180,0,0.9)', fill: false, order: 1, tension: 0.2 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
       animation: { duration: 100, onComplete },
       scales: {
         y: { beginAtZero: false, min: yMin, max: yMax, ticks: { color: '#93a1b0', callback: v => v.toFixed(2) }, grid: { color: 'rgba(255,255,255,0.05)' } },
         x: { ticks: { color: '#93a1b0', maxTicksLimit: 8, autoSkip: true }, grid: { display: false } }
       },
-      plugins: { legend: { display: false }, tooltip: tooltipConfig(getCandles) }
+      plugins: { legend: { display: false }, tooltip: tooltipConfigPred() }
     }
   });
 }
 
-function updateChart(chart, getCandles) {
-  const { labels, wick, body, wickColors, bodyColors, yMin, yMax } = buildDatasets(getCandles());
+function updateChartReal(chart) {
+  const { labels, wick, body, wickColors, bodyColors, yMin, yMax } = buildCandleDatasets(realCandles);
   chart.data.labels = labels;
   chart.data.datasets[0].data = wick;
   chart.data.datasets[0].backgroundColor = wickColors;
   chart.data.datasets[1].data = body;
   chart.data.datasets[1].backgroundColor = bodyColors;
+  chart.options.scales.y.min = yMin;
+  chart.options.scales.y.max = yMax;
+  chart.update();
+}
+
+function updateChartPred(chart) {
+  const { labels, wick, body, wickColors, bodyColors, predLine, predHigh, predLow, yMin, yMax } = buildPredDatasets();
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = wick;
+  chart.data.datasets[0].backgroundColor = wickColors;
+  chart.data.datasets[1].data = body;
+  chart.data.datasets[1].backgroundColor = bodyColors;
+  chart.data.datasets[2].data = predHigh;
+  chart.data.datasets[3].data = predLow;
+  chart.data.datasets[4].data = predLine;
   chart.options.scales.y.min = yMin;
   chart.options.scales.y.max = yMax;
   chart.update();
@@ -643,11 +754,11 @@ function positionBoundary() {
 
 function renderChart() {
   if (!chartLive) {
-    chartLive = makeChart('chart-live', () => realCandles, null);
-    chartPred = makeChart('chart-pred', () => predCandles(), positionBoundary);
+    chartLive = makeChartReal('chart-live');
+    chartPred = makeChartPred('chart-pred', positionBoundary);
   } else {
-    updateChart(chartLive, () => realCandles);
-    updateChart(chartPred, () => predCandles());
+    updateChartReal(chartLive);
+    updateChartPred(chartPred);
   }
   positionBoundary();
 }
